@@ -1,0 +1,16 @@
+jenkins_namespace: jenkins
+jenkins_release_name: jenkins
+jenkins_chart_repo_name: jenkins
+jenkins_chart_repo_url: https://charts.jenkins.io
+jenkins_chart_ref: jenkins/jenkins
+jenkins_kubeconfig: "{{ lookup('ansible.builtin.env', 'K8S_KUBECONFIG') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.kube/config', true) }}"
+nfs_server_ip: "{{ lookup('ansible.builtin.env', 'NFS_SERVER_IP') | default('10.89.1.15', true) }}"
+nfs_data_device: /dev/sdb
+nfs_format_data_disk: false
+nfs_export_path: /srv/nfs/jenkins
+nfs_allowed_clients:
+  - 10.89.1.20
+  - 10.89.1.25
+  - 10.89.1.26
+nfs_storage_class_name: nfs-jenkins
+nfs_csi_chart_version: 4.13.5

@@ -1,0 +1,18 @@
+postgresql_namespace: postgresql
+postgresql_release_name: postgresql
+postgresql_chart_repo_name: bitnami
+postgresql_chart_repo_url: https://charts.bitnami.com/bitnami
+postgresql_chart_ref: bitnami/postgresql
+postgresql_chart_version: "18.12.4"
+postgresql_kubeconfig: "{{ lookup('ansible.builtin.env', 'K8S_KUBECONFIG') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.kube/config', true) }}"
+postgresql_service_name: postgresql
+postgresql_db_name: "{{ lookup('ansible.builtin.env', 'POSTGRESQL_DATABASE') | default('application', true) }}"
+postgresql_db_user: "{{ lookup('ansible.builtin.env', 'POSTGRESQL_USER') | default('application', true) }}"
+postgresql_db_password: "{{ lookup('ansible.builtin.env', 'POSTGRESQL_PASSWORD') }}"
+postgresql_storage_size: "{{ lookup('ansible.builtin.env', 'POSTGRESQL_STORAGE_SIZE') | default('30Gi', true) }}"
+postgresql_cpu_request: "500m"
+postgresql_cpu_limit: "2"
+postgresql_memory_request: 1Gi
+postgresql_memory_limit: 2Gi
+postgresql_load_balancer_ip: "{{ lookup('ansible.builtin.env', 'POSTGRESQL_LB_IP') | default('', true) }}"
+postgresql_load_balancer_source_ranges: "{{ lookup('ansible.builtin.env', 'POSTGRESQL_ALLOWED_CIDRS') | default('10.89.1.0/24', true) | split(',') | map('trim') | list }}"

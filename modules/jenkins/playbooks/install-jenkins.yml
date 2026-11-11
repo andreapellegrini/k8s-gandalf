@@ -1,0 +1,285 @@
+---
+- name: Prepara il server NFS
+  hosts: nfs_server
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Installa i pacchetti NFS e filesystem
+      ansible.builtin.dnf:
+        name:
+          - nfs-utils
+          - xfsprogs
+          - policycoreutils-python-utils
+        state: present
+
+    - name: Verifica che il disco dati esista
+      ansible.builtin.stat:
+        path: "{{ nfs_data_device }}"
+      register: nfs_data_disk
+
+    - name: Richiedi un dispositivo a blocchi non montato
+      ansible.builtin.assert:
+        that:
+          - nfs_data_disk.stat.exists
+          - nfs_data_disk.stat.isblk
+        fail_msg: "{{ nfs_data_device }} non è un dispositivo a blocchi. Verifica il disco dati collegato alla VM gandalf-storage1."
+
+    - name: Verifica che il dispositivo sia un disco intero
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - --noheadings
+          - --nodeps
+          - --output
+          - TYPE
+          - "{{ nfs_data_device }}"
+      register: nfs_data_device_type
+      changed_when: false
+
+    - name: Rifiuta partizioni e dispositivi non-disco
+      ansible.builtin.assert:
+        that:
+          - nfs_data_device_type.stdout | trim == 'disk'
+        fail_msg: "{{ nfs_data_device }} non è un disco intero. Usa il device del disco dati dedicato, ad esempio /dev/sdb."
+
+    - name: Controlla che il disco dati non contenga filesystem montati
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - --noheadings
+          - --raw
+          - --output
+          - MOUNTPOINTS
+          - "{{ nfs_data_device }}"
+      register: nfs_data_mounts
+      changed_when: false
+
+    - name: Rifiuta dischi dati montati fuori dalla radice NFS prevista
+      ansible.builtin.assert:
+        that:
+          - nfs_data_mounts.stdout | trim in ['', '/srv/nfs']
+        fail_msg: "{{ nfs_data_device }} è montato fuori da /srv/nfs. Non verrà formattato né spostato."
+
+    - name: Rileva il filesystem del disco dati
+      ansible.builtin.command:
+        argv:
+          - blkid
+          - -o
+          - value
+          - -s
+          - TYPE
+          - "{{ nfs_data_device }}"
+      register: nfs_data_filesystem
+      changed_when: false
+      failed_when: nfs_data_filesystem.rc not in [0, 2]
+
+    - name: Richiedi conferma esplicita prima di formattare il disco vuoto
+      ansible.builtin.assert:
+        that:
+          - nfs_data_filesystem.rc == 0 and nfs_data_filesystem.stdout == 'xfs' or nfs_data_filesystem.rc == 2 and nfs_format_data_disk | bool
+        fail_msg: >-
+          Il disco deve essere XFS oppure vuoto con conferma esplicita.
+          Per inizializzare il nuovo disco dati usa
+          -e nfs_format_data_disk=true; un filesystem esistente diverso da XFS non verrà modificato.
+
+    - name: Inizializza il disco dati vuoto in XFS
+      ansible.builtin.command:
+        argv:
+          - mkfs.xfs
+          - -f
+          - "{{ nfs_data_device }}"
+      when: nfs_data_filesystem.rc == 2
+      changed_when: true
+
+    - name: Legge l'UUID del filesystem dati
+      ansible.builtin.command:
+        argv:
+          - blkid
+          - -o
+          - value
+          - -s
+          - UUID
+          - "{{ nfs_data_device }}"
+      register: nfs_data_uuid
+      changed_when: false
+
+    - name: Monta il disco dati in /srv/nfs
+      ansible.posix.mount:
+        path: /srv/nfs
+        src: "UUID={{ nfs_data_uuid.stdout }}"
+        fstype: xfs
+        opts: defaults,noatime
+        state: mounted
+
+    - name: Crea la radice NFS dedicata a Jenkins
+      ansible.builtin.file:
+        path: "{{ nfs_export_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0777"
+
+    - name: Abilita SELinux per export NFS in scrittura
+      ansible.posix.seboolean:
+        name: nfs_export_all_rw
+        state: true
+        persistent: true
+      when: ansible_selinux.status == 'enabled'
+
+    - name: Legge le regole SELinux locali
+      ansible.builtin.command: semanage fcontext -l -C
+      register: nfs_selinux_rules
+      changed_when: false
+      when: ansible_selinux.status == 'enabled'
+
+    - name: Configura il contesto SELinux della radice NFS
+      ansible.builtin.command:
+        argv:
+          - semanage
+          - fcontext
+          - "{{ '-m' if nfs_export_path in nfs_selinux_rules.stdout else '-a' }}"
+          - -t
+          - public_content_rw_t
+          - "{{ nfs_export_path }}(/.*)?"
+      changed_when: true
+      when:
+        - ansible_selinux.status == 'enabled'
+        - nfs_export_path not in nfs_selinux_rules.stdout or 'public_content_rw_t' not in nfs_selinux_rules.stdout
+
+    - name: Ripristina il contesto SELinux della radice NFS
+      ansible.builtin.command:
+        argv:
+          - restorecon
+          - -irv
+          - "{{ nfs_export_path }}"
+      changed_when: false
+      when: ansible_selinux.status == 'enabled'
+
+    - name: Configura l'export NFSv4 limitato ai nodi Gandalf
+      ansible.builtin.template:
+        src: ../templates/jenkins.exports.j2
+        dest: /etc/exports.d/jenkins.exports
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Ricarica export NFS
+
+    - name: Avvia firewalld
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Consenti NFSv4 dal cluster
+      ansible.posix.firewalld:
+        port: 2049/tcp
+        state: enabled
+        permanent: true
+        immediate: true
+
+    - name: Avvia e abilita il server NFS
+      ansible.builtin.service:
+        name: nfs-server
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Ricarica export NFS
+      ansible.builtin.command: exportfs -ra
+      changed_when: true
+
+- name: Installa i client NFS sui nodi Kubernetes
+  hosts: k8s_nodes
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Installa le utility client NFS
+      ansible.builtin.dnf:
+        name: nfs-utils
+        state: present
+
+- name: Installa CSI NFS e Jenkins sul cluster Gandalf
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verifica che il kubeconfig esista
+      ansible.builtin.stat:
+        path: "{{ jenkins_kubeconfig }}"
+      register: kubeconfig_file
+
+    - name: Richiedi un kubeconfig disponibile
+      ansible.builtin.assert:
+        that:
+          - kubeconfig_file.stat.exists
+          - kubeconfig_file.stat.isreg
+        fail_msg: >-
+          Kubeconfig non trovato in {{ jenkins_kubeconfig }}.
+          Imposta K8S_KUBECONFIG se si trova in un percorso diverso.
+
+    - name: Aggiungi il repository Helm ufficiale NFS CSI
+      kubernetes.core.helm_repository:
+        name: csi-driver-nfs
+        repo_url: https://kubernetes-csi.github.io/csi-driver-nfs
+        state: present
+
+    - name: Installa il driver CSI NFS
+      kubernetes.core.helm:
+        name: csi-driver-nfs
+        chart_ref: csi-driver-nfs/csi-driver-nfs
+        chart_version: "{{ nfs_csi_chart_version }}"
+        release_namespace: kube-system
+        kubeconfig: "{{ jenkins_kubeconfig }}"
+        release_state: present
+        wait: true
+        timeout: 10m
+
+    - name: Crea la StorageClass NFS predefinita
+      kubernetes.core.k8s:
+        kubeconfig: "{{ jenkins_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: "{{ nfs_storage_class_name }}"
+            annotations:
+              storageclass.kubernetes.io/is-default-class: "true"
+          provisioner: nfs.csi.k8s.io
+          parameters:
+            server: "{{ nfs_server_ip }}"
+            share: /
+          reclaimPolicy: Retain
+          volumeBindingMode: Immediate
+          mountOptions:
+            - nfsvers=4.1
+
+    - name: Aggiungi il repository Helm ufficiale di Jenkins
+      kubernetes.core.helm_repository:
+        name: "{{ jenkins_chart_repo_name }}"
+        repo_url: "{{ jenkins_chart_repo_url }}"
+        state: present
+
+    - name: Installa o aggiorna Jenkins nel namespace dedicato
+      kubernetes.core.helm:
+        name: "{{ jenkins_release_name }}"
+        chart_ref: "{{ jenkins_chart_ref }}"
+        chart_version: "{{ jenkins_chart_version | default(omit) }}"
+        release_namespace: "{{ jenkins_namespace }}"
+        create_namespace: true
+        kubeconfig: "{{ jenkins_kubeconfig }}"
+        release_state: present
+        wait: true
+        timeout: 10m
+        values:
+          controller:
+            serviceType: LoadBalancer
+          persistence:
+            enabled: true
+            storageClass: "{{ nfs_storage_class_name }}"

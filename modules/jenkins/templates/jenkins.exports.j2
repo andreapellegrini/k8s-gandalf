@@ -1,0 +1,1 @@
+{{ nfs_export_path }} {% for client_ip in nfs_allowed_clients %}{{ client_ip }}(rw,sync,no_subtree_check,no_root_squash,fsid=0){% if not loop.last %} {% endif %}{% endfor %}

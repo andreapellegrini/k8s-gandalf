@@ -1,0 +1,73 @@
+---
+- name: Installa PostgreSQL nel cluster Gandalf
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verifica che il kubeconfig esista
+      ansible.builtin.stat:
+        path: "{{ postgresql_kubeconfig }}"
+      register: kubeconfig_file
+
+    - name: Richiedi un kubeconfig disponibile
+      ansible.builtin.assert:
+        that:
+          - kubeconfig_file.stat.exists
+          - kubeconfig_file.stat.isreg
+        fail_msg: >-
+          Kubeconfig non trovato in {{ postgresql_kubeconfig }}.
+          Imposta K8S_KUBECONFIG se si trova in un percorso diverso.
+
+    - name: Richiedi una password PostgreSQL non vuota
+      ansible.builtin.assert:
+        that:
+          - postgresql_db_password | length > 0
+        fail_msg: >-
+          Imposta POSTGRESQL_PASSWORD prima di installare PostgreSQL.
+
+    - name: Aggiungi il repository Helm ufficiale Bitnami
+      kubernetes.core.helm_repository:
+        name: "{{ postgresql_chart_repo_name }}"
+        repo_url: "{{ postgresql_chart_repo_url }}"
+        state: present
+
+    - name: Installa o aggiorna PostgreSQL nel namespace dedicato
+      kubernetes.core.helm:
+        name: "{{ postgresql_release_name }}"
+        chart_ref: "{{ postgresql_chart_ref }}"
+        chart_version: "{{ postgresql_chart_version }}"
+        release_namespace: "{{ postgresql_namespace }}"
+        create_namespace: true
+        kubeconfig: "{{ postgresql_kubeconfig }}"
+        release_state: present
+        wait: true
+        timeout: 15m
+        values:
+          fullnameOverride: "{{ postgresql_service_name }}"
+          architecture: standalone
+          auth:
+            username: "{{ postgresql_db_user }}"
+            database: "{{ postgresql_db_name }}"
+            password: "{{ postgresql_db_password }}"
+          primary:
+            service:
+              type: LoadBalancer
+              loadBalancerIP: "{{ postgresql_load_balancer_ip }}"
+              loadBalancerSourceRanges: "{{ postgresql_load_balancer_source_ranges }}"
+            resources:
+              requests:
+                cpu: "{{ postgresql_cpu_request }}"
+                memory: "{{ postgresql_memory_request }}"
+              limits:
+                cpu: "{{ postgresql_cpu_limit }}"
+                memory: "{{ postgresql_memory_limit }}"
+            persistence:
+              enabled: true
+              size: "{{ postgresql_storage_size }}"
+            persistentVolumeClaimRetentionPolicy:
+              enabled: true
+              whenDeleted: Retain
+              whenScaled: Retain
+      no_log: true

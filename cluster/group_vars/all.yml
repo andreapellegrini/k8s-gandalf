@@ -1,0 +1,25 @@
+cluster_name: gandalf
+cluster_dns_domain: cluster.local
+pod_network_cidr: 10.244.0.0/16
+kubernetes_minor_version: "1.35"
+metallb_version: v0.15.2
+metallb_ip_range: 10.89.1.30-10.89.1.40
+
+cluster_gateway: 10.89.1.1
+cluster_dns_server: 10.89.1.1
+cluster_nodes:
+  - name: gandalf-master1
+    role: control-plane
+    ip: 10.89.1.20
+    vcpus: 4
+    memory_gb: 8
+  - name: gandalf-worker1
+    role: worker
+    ip: 10.89.1.25
+    vcpus: 4
+    memory_gb: 16
+  - name: gandalf-worker2
+    role: worker
+    ip: 10.89.1.26
+    vcpus: 4
+    memory_gb: 16
